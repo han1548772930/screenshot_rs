@@ -1,17 +1,16 @@
 #![windows_subsystem = "windows"]
 
-use fltk::{app, window};
 use fltk::app::{event_x, event_y};
 use fltk::draw::{draw_rect, set_draw_color};
 use fltk::enums::{Color, ColorDepth, Event, Key};
 use fltk::frame::Frame;
 use fltk::image::RgbImage;
+use fltk::{app, window};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-
 use fltk::prelude::{GroupExt, ImageExt, WidgetBase, WidgetExt, WindowExt};
-use fltk::window::{Window};
+use fltk::window::Window;
 use image::{DynamicImage, GenericImageView, RgbaImage};
 
 use inputbot::KeybdKey::{LAltKey, NKey};
@@ -62,7 +61,7 @@ fn main() {
     let (w, h, w2, h2, proportion) = get_win_info();
     let app = app::App::default();
     app::set_screen_scale(0, proportion);
-    let mut wind = Window::new(0, 0, 0, 0, "");
+    let mut wind = Window::new(0, 0, 1, 1, "");
     wind.set_border(false);
     wind.end();
     wind.show();
@@ -100,14 +99,12 @@ fn main() {
     let mut end_x = 0;
     let mut end_y = 0;
 
-
     msg_frame.handle(move |f, ev| {
         let img_c = Arc::clone(&IMG_C);
         let msg_wind_clone = Arc::clone(&MSG_WINDOW);
         let drag_wind_clone = Arc::clone(&DRAG_WINDOW);
         let area_wind_clone = Arc::clone(&AREA_WINDOW);
         let area_frame = Arc::clone(&AREA_FRAME);
-
 
         // let drag_frame_clone = Arc::clone(&DRAG_FRAME);
         match ev {
@@ -158,7 +155,7 @@ fn main() {
                     h as i32,
                     ColorDepth::Rgba8,
                 )
-                    .unwrap();
+                .unwrap();
 
                 let mut new_win = Window::new(
                     start_x,
@@ -188,7 +185,8 @@ fn main() {
                     let new_win_c = new_win_c.clone();
                     match ev {
                         Event::KeyDown => {
-                            if app::event_key() == Key::BackSpace || app::event_key() == Key::Escape {
+                            if app::event_key() == Key::BackSpace || app::event_key() == Key::Escape
+                            {
                                 // win.hide();
                                 Window::delete(new_win_c);
                                 true
@@ -322,7 +320,7 @@ fn main() {
                         buf.height as i32,
                         ColorDepth::Rgba8,
                     )
-                        .unwrap();
+                    .unwrap();
                     let grayscale_screenshot = fltk_screenshot.convert(ColorDepth::L8).unwrap();
                     if let Some(frame) = msg_frame.as_mut() {
                         frame.set_image_scaled(Some(grayscale_screenshot));
@@ -375,4 +373,5 @@ fn main() {
             }
         });
     }
+    app.run().unwrap();
 }

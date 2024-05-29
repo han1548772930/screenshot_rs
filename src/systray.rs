@@ -43,7 +43,7 @@ mod system_tray_ui {
     use std::ops::Deref;
     use std::rc::Rc;
     use fltk::prelude::{WidgetBase, WidgetExt, WindowExt};
-    use crate::ACTIVE_WINDOWS;
+    // use crate::ACTIVE_WINDOWS;
 
 
     pub struct SystemTrayUi {
@@ -52,15 +52,7 @@ mod system_tray_ui {
         windows: Vec<fltk::window::Window>,
     }
 
-    impl SystemTray {
-        fn close_all_windows(&self) {
-            let mut active_windows = ACTIVE_WINDOWS.lock().unwrap();
 
-            for window in active_windows.iter_mut() {
-                window.hide();
-            }
-        }
-    }
 
     impl nwg::NativeUi<SystemTrayUi> for SystemTray {
         fn build_ui(mut data: SystemTray) -> Result<SystemTrayUi, nwg::NwgError> {
@@ -83,10 +75,10 @@ mod system_tray_ui {
                 .popup(true)
                 .parent(&data.window)
                 .build(&mut data.tray_menu)?;
-            nwg::MenuItem::builder()
-                .text("close_all_window")
-                .parent(&data.tray_menu)
-                .build(&mut data.tray_item1)?;
+            // nwg::MenuItem::builder()
+            //     .text("close_all_window")
+            //     .parent(&data.tray_menu)
+            //     .build(&mut data.tray_item1)?;
 
             nwg::MenuItem::builder()
                 .text("Exit")
@@ -112,7 +104,7 @@ mod system_tray_ui {
                         }
                         E::OnMenuItemSelected => {
                             if &handle == &evt_ui.tray_item1 {
-                                evt_ui.close_all_windows();
+                                // evt_ui.close_all_windows();
                             } else if &handle == &evt_ui.tray_item2 {
                                 SystemTray::exit(&evt_ui);
                             }

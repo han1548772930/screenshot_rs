@@ -1,6 +1,6 @@
 #![windows_subsystem = "windows"]
 
-use fltk::app;
+use fltk::{app, window};
 use fltk::app::{event_x, event_y};
 use fltk::draw::{draw_rect, set_draw_color};
 use fltk::enums::{Color, ColorDepth, Event, Key};
@@ -49,7 +49,7 @@ pub enum Message {
 }
 
 lazy_static! {
-    static ref ACTIVE_WINDOWS: Mutex<Vec<Window>> = Mutex::new(Vec::new());
+    // static ref ACTIVE_WINDOWS: Mutex<Vec<Window>> = Mutex::new(Vec::new());
     static ref MSG_WINDOW: Arc<Mutex<Option<Window>>> = Arc::new(Mutex::new(None));
     static ref MSG_FRAME: Arc<Mutex<Option<Frame>>> = Arc::new(Mutex::new(None));
     static ref DRAG_WINDOW: Arc<Mutex<Option<Window>>> = Arc::new(Mutex::new(None));
@@ -183,13 +183,14 @@ fn main() {
                 new_win.add(&new_frame);
                 new_win.end();
                 let mut offset = (0, 0);
-
+                let new_win_c = new_win.clone();
                 new_win.handle(move |win, ev| {
+                    let new_win_c = new_win_c.clone();
                     match ev {
                         Event::KeyDown => {
                             if app::event_key() == Key::BackSpace || app::event_key() == Key::Escape {
-                                win.hide();
-
+                                // win.hide();
+                                Window::delete(new_win_c);
                                 true
                             } else {
                                 false
@@ -244,7 +245,8 @@ fn main() {
                         SWP_NOMOVE | SWP_NOSIZE,
                     );
                 }
-                ACTIVE_WINDOWS.lock().unwrap().push(new_win);
+                // ACTIVE_WINDOWS.lock().unwrap().push(new_win);
+
                 start_x = 0;
                 start_y = 0;
                 end_x = 0;

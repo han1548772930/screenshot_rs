@@ -1,11 +1,11 @@
-#![windows_subsystem = "windows"]
+// #![windows_subsystem = "windows"]
 
+use fltk::app;
 use fltk::app::{event_coords, event_x, event_x_root, event_y, event_y_root};
 use fltk::draw::{draw_rect, set_draw_color};
 use fltk::enums::{Color, ColorDepth, Event, Key};
 use fltk::frame::Frame;
 use fltk::image::RgbImage;
-use fltk::{app};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -87,10 +87,8 @@ fn main() {
     msg_frame.handle(move |f, ev| {
         let img_c = Arc::clone(&IMG_C);
         let msg_wind_clone = Arc::clone(&MSG_WINDOW);
-
         let area_wind_clone = Arc::clone(&AREA_WINDOW);
         let area_frame = Arc::clone(&AREA_FRAME);
-
         match ev {
             Event::KeyDown => {
                 if app::event_key() == Key::Escape {
@@ -106,7 +104,9 @@ fn main() {
             Event::Push => {
                 let mut area_wind = area_wind_clone.lock().unwrap();
                 if let Some(w) = area_wind.as_mut() {
-                    w.show();
+                    if w.width() > 5 && w.height() > 5 {
+                        w.show();
+                    }
                 }
                 start_x = event_x();
                 start_y = event_y();
@@ -125,8 +125,8 @@ fn main() {
             Event::Released => {
                 let w = ((end_x - start_x) as f32 * proportion) as u32;
                 let h = ((end_y - start_y) as f32 * proportion) as u32;
-                if w <= 10 || h <= 10 {
-                    return true;
+                if w <= 5 || h <= 5 {
+                    return false;
                 }
                 let start_x_n = (start_x as f32 * proportion) as u32;
                 let start_y_n = (start_y as f32 * proportion) as u32;
@@ -139,7 +139,7 @@ fn main() {
                     h as i32,
                     ColorDepth::Rgba8,
                 )
-                .unwrap();
+                    .unwrap();
 
                 let mut new_win = Window::new(
                     start_x,
@@ -166,7 +166,7 @@ fn main() {
                 let mut offset = (0, 0);
 
                 let new_win_c = new_win.clone();
-                new_win.handle(move |_, ev| {
+                new_win.handle(move |win, ev| {
                     let new_win_c = new_win_c.clone();
                     match ev {
                         Event::KeyDown => {
@@ -178,22 +178,20 @@ fn main() {
                                 false
                             }
                         }
+                        Event::Push => {
+                            offset = (event_coords().0, event_coords().1);
+                            true
+                        }
+                        Event::Drag => {
+                            let new_x = event_x_root() - offset.0;
+                            let new_y = event_y_root() - offset.1;
+                            win.set_pos(new_x, new_y);
+                            true
+                        }
                         _ => false,
                     }
                 });
-                new_frame.handle(move |f, ev| match ev {
-                    Event::Push => {
-                        offset = (event_coords().0, event_coords().1);
-                        true
-                    }
-                    Event::Drag => {
-                        let new_x = event_x_root() - offset.0;
-                        let new_y = event_y_root() - offset.1;
-                        f.window().unwrap().set_pos(new_x, new_y);
-                        true
-                    }
-                    _ => false,
-                });
+
                 new_win.show();
                 unsafe {
                     SetWindowPos(
@@ -284,7 +282,7 @@ fn main() {
                         buf.height as i32,
                         ColorDepth::Rgba8,
                     )
-                    .unwrap();
+                        .unwrap();
                     let grayscale_screenshot = fltk_screenshot.convert(ColorDepth::L8).unwrap();
                     if let Some(frame) = msg_frame.as_mut() {
                         frame.set_image_scaled(Some(grayscale_screenshot));
@@ -296,7 +294,7 @@ fn main() {
                     if let Some(win) = msg_w.as_mut() {
                         win.set_size(w2, h2);
                         win.fullscreen(true);
-                        win.make_current();
+                        // win.make_current();
                     }
                     s.send(Message::Message);
                     NKey.unbind();

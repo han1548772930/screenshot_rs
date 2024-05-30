@@ -1,4 +1,4 @@
-// #![windows_subsystem = "windows"]
+#![windows_subsystem = "windows"]
 
 use fltk::app;
 use fltk::app::{event_coords, event_x, event_x_root, event_y, event_y_root};

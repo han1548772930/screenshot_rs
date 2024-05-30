@@ -266,6 +266,7 @@ fn main() {
                     let mut msg_w = msg_w.lock().unwrap();
                     if let Some(win) = msg_w.as_mut() {
                         if win.visible() {
+                            NKey.unbind();
                             return;
                         }
                     }

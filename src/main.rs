@@ -1,11 +1,11 @@
 #![windows_subsystem = "windows"]
 
-use fltk::app::{event_x, event_y};
+use fltk::app::{event_coords, event_x, event_x_root, event_y, event_y_root};
 use fltk::draw::{draw_rect, set_draw_color};
 use fltk::enums::{Color, ColorDepth, Event, Key};
 use fltk::frame::Frame;
 use fltk::image::RgbImage;
-use fltk::{app, window};
+use fltk::{app};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -51,10 +51,8 @@ lazy_static! {
     // static ref ACTIVE_WINDOWS: Mutex<Vec<Window>> = Mutex::new(Vec::new());
     static ref MSG_WINDOW: Arc<Mutex<Option<Window>>> = Arc::new(Mutex::new(None));
     static ref MSG_FRAME: Arc<Mutex<Option<Frame>>> = Arc::new(Mutex::new(None));
-    static ref DRAG_WINDOW: Arc<Mutex<Option<Window>>> = Arc::new(Mutex::new(None));
     static ref AREA_FRAME: Arc<Mutex<Option<Frame>>> = Arc::new(Mutex::new(None));
     static ref AREA_WINDOW: Arc<Mutex<Option<Window>>> = Arc::new(Mutex::new(None));
-    // static ref DRAG_FRAME: Arc<Mutex<Option<Frame>>> = Arc::new(Mutex::new(None));
     static ref IMG_C: Arc<Mutex<Option<DynamicImage>>> = Arc::new(Mutex::new(None));
 }
 fn main() {
@@ -62,33 +60,20 @@ fn main() {
     let app = app::App::default();
     app::set_screen_scale(0, proportion);
     let mut wind = Window::new(0, 0, 1, 1, "");
+
     wind.set_border(false);
     wind.end();
     wind.show();
+
     let mut msg_wind = Window::new(0, 0, w2, h2, "Cropped Image");
     let mut msg_frame = Frame::default_fill();
     msg_wind.add(&msg_frame);
     msg_wind.fullscreen(true);
     msg_wind.set_border(false);
     msg_wind.end();
-    let mut drag_wind = Window::new(0, 0, 500, 500, "Cropped Image");
-    drag_wind.set_border(false);
 
-    // let mut drag_frame = Frame::default_fill();
-    // drag_frame.draw(move |f| {
-    //     // Draw the border
-    //     set_draw_color(Color::Red); // Set the border color
-    //     let border_width = 5;
-    //     for i in 0..border_width {
-    //         draw_rect(i, i, f.w() - 2 * i, f.h() - 2 * i);
-    //     }
-    // });
-    // drag_wind.add(&drag_frame);
-    drag_wind.end();
-    // *DRAG_FRAME.lock().unwrap() = Some(drag_frame);
-    *DRAG_WINDOW.lock().unwrap() = Some(drag_wind);
     let mut area_win = Window::new(0, 0, 500, 500, "");
-    let mut area_frame = Frame::new(0, 0, w2, h2, "");
+    let area_frame = Frame::new(0, 0, w2, h2, "");
     area_win.set_border(false);
     area_win.add(&area_frame);
     area_win.end();
@@ -102,11 +87,10 @@ fn main() {
     msg_frame.handle(move |f, ev| {
         let img_c = Arc::clone(&IMG_C);
         let msg_wind_clone = Arc::clone(&MSG_WINDOW);
-        let drag_wind_clone = Arc::clone(&DRAG_WINDOW);
+
         let area_wind_clone = Arc::clone(&AREA_WINDOW);
         let area_frame = Arc::clone(&AREA_FRAME);
 
-        // let drag_frame_clone = Arc::clone(&DRAG_FRAME);
         match ev {
             Event::KeyDown => {
                 if app::event_key() == Key::Escape {
@@ -170,67 +154,46 @@ fn main() {
                     msg_wind.hide()
                 }
                 new_win.set_border(false);
-
                 let mut new_frame = Frame::default_fill();
-                new_frame.set_image_scaled(Some(cropped_rgb_image.clone()));
+                new_frame.set_image_scaled(Some(cropped_rgb_image));
                 new_frame.draw(move |f| {
                     set_draw_color(Color::from_rgba_tuple((0, 2, 2, 75)));
                     draw_rect(f.x(), f.y(), f.width(), f.height());
                 });
                 new_win.add(&new_frame);
                 new_win.end();
+
                 let mut offset = (0, 0);
+
                 let new_win_c = new_win.clone();
-                new_win.handle(move |win, ev| {
+                new_win.handle(move |_, ev| {
                     let new_win_c = new_win_c.clone();
                     match ev {
                         Event::KeyDown => {
                             if app::event_key() == Key::BackSpace || app::event_key() == Key::Escape
                             {
-                                // win.hide();
                                 Window::delete(new_win_c);
                                 true
                             } else {
                                 false
                             }
                         }
-                        Event::Push => {
-                            offset = (event_x() - win.x(), event_y() - win.y());
-                            true
-                        }
-                        Event::Drag => {
-                            let mut drag_win_c = drag_wind_clone.lock().unwrap();
-                            // let mut drag_frame = drag_frame_clone.lock().unwrap();
-                            if let Some(drag_win_cc) = drag_win_c.as_mut() {
-                                drag_win_cc.set_size(
-                                    cropped_rgb_image.width(),
-                                    cropped_rgb_image.height(),
-                                );
-                                drag_win_cc.set_pos(event_x() - offset.0, event_y() - offset.1);
-                                drag_win_cc.add(&new_frame.clone());
-                                drag_win_cc.show();
-                                if win.width() > 0 && win.height() > 0 {
-                                    win.set_size(0, 0);
-                                }
-                            }
-                            true
-                        }
-
-                        Event::Released => {
-                            let mut drag_win = drag_wind_clone.lock().unwrap();
-                            if let Some(drag_win) = drag_win.as_mut() {
-                                win.set_size(cropped_rgb_image.width(), cropped_rgb_image.height());
-                                win.set_pos(drag_win.x(), drag_win.y());
-                                win.add(&new_frame);
-                                win.show();
-                                drag_win.hide();
-                            }
-                            true
-                        }
                         _ => false,
                     }
                 });
-
+                new_frame.handle(move |f, ev| match ev {
+                    Event::Push => {
+                        offset = (event_coords().0, event_coords().1);
+                        true
+                    }
+                    Event::Drag => {
+                        let new_x = event_x_root() - offset.0;
+                        let new_y = event_y_root() - offset.1;
+                        f.window().unwrap().set_pos(new_x, new_y);
+                        true
+                    }
+                    _ => false,
+                });
                 new_win.show();
                 unsafe {
                     SetWindowPos(
@@ -277,8 +240,9 @@ fn main() {
                 draw_rect(0, 0, w, h);
             }
             if let Some(win) = area_win.as_mut() {
-                win.set_pos(start_x, start_y);
-                win.set_size(end_x - start_x, end_y - start_y);
+                // win.set_pos(start_x, start_y);
+                // win.set_size(end_x - start_x, end_y - start_y);
+                win.resize(start_x, start_y, end_x - start_x, end_y - start_y);
                 if let Some(f) = area_frame.as_mut() {
                     f.set_pos(-start_x, -start_y);
                 }

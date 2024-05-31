@@ -72,7 +72,7 @@ fn main() {
     msg_wind.set_border(false);
     msg_wind.end();
 
-    let mut area_win = Window::new(0, 0, 500, 500, "");
+    let mut area_win = Window::new(0, 0, 20, 20, "");
     let area_frame = Frame::new(0, 0, w2, h2, "");
     area_win.set_border(false);
     area_win.add(&area_frame);
@@ -81,9 +81,10 @@ fn main() {
     *AREA_WINDOW.lock().unwrap() = Some(area_win);
     let mut start_x = 0;
     let mut start_y = 0;
-    let mut end_x = 0;
-    let mut end_y = 0;
-
+    let mut left = 0;
+    let mut top = 0;
+    let mut right = 0;
+    let mut bottom = 0;
     msg_frame.handle(move |f, ev| {
         let img_c = Arc::clone(&IMG_C);
         let msg_wind_clone = Arc::clone(&MSG_WINDOW);
@@ -104,32 +105,33 @@ fn main() {
             Event::Push => {
                 let mut area_wind = area_wind_clone.lock().unwrap();
                 if let Some(w) = area_wind.as_mut() {
-                    if w.width() > 5 && w.height() > 5 {
-                        w.show();
-                    }
+                    w.show();
                 }
                 start_x = event_x();
                 start_y = event_y();
-                end_x = (start_x as f32 * proportion) as i32; // 添加这行代码
-                end_y = (start_y as f32 * proportion) as i32; // 添加这行代码
-
                 f.redraw();
                 true
             }
             Event::Drag => {
-                end_x = event_x();
-                end_y = event_y();
+                left = start_x.min(event_x());
+                top = start_y.min(event_y());
+                right = start_x.max(event_x());
+                bottom = start_y.max(event_y());
                 f.redraw();
                 true
             }
             Event::Released => {
-                let w = ((end_x - start_x) as f32 * proportion) as u32;
-                let h = ((end_y - start_y) as f32 * proportion) as u32;
-                if w <= 5 || h <= 5 {
-                    return false;
+                let w = ((right - left) as f32 * proportion) as u32;
+                let h = ((bottom - top) as f32 * proportion) as u32;
+                if w <= 0 || h <= 0 {
+                    let mut area_wind = area_wind_clone.lock().unwrap();
+                    if let Some(w) = area_wind.as_mut() {
+                        w.hide();
+                    }
+                    return true;
                 }
-                let start_x_n = (start_x as f32 * proportion) as u32;
-                let start_y_n = (start_y as f32 * proportion) as u32;
+                let start_x_n = (left as f32 * proportion) as u32;
+                let start_y_n = (top as f32 * proportion) as u32;
                 let img_c_guard = img_c.lock().unwrap();
                 let img_c = img_c_guard.as_ref();
                 let cropped_img = img_c.unwrap().view(start_x_n, start_y_n, w, h).to_image();
@@ -139,11 +141,11 @@ fn main() {
                     h as i32,
                     ColorDepth::Rgba8,
                 )
-                    .unwrap();
+                .unwrap();
 
                 let mut new_win = Window::new(
-                    start_x,
-                    start_y,
+                    left,
+                    top,
                     cropped_rgb_image.width(),
                     cropped_rgb_image.height(),
                     "Cropped Image",
@@ -208,8 +210,10 @@ fn main() {
 
                 start_x = 0;
                 start_y = 0;
-                end_x = 0;
-                end_y = 0;
+                left = 0;
+                top = 0;
+                right = 0;
+                bottom = 0;
                 let mut area_wind = area_wind_clone.lock().unwrap();
                 if let Some(w) = area_wind.as_mut() {
                     w.hide();
@@ -226,24 +230,26 @@ fn main() {
             let mut area_frame = area_frame.lock().unwrap();
             set_draw_color(Color::Red); // 设置绘制颜色
             let thickness = 5;
+            // 计算矩形的左上角和右下角
+
             for i in 0..thickness {
                 draw_rect(
-                    start_x - i,
-                    start_y - i,
-                    (end_x - start_x) + 2 * i,
-                    (end_y - start_y) + 2 * i,
+                    left - i,
+                    top - i,
+                    (right - left) + 2 * i,
+                    (bottom - top) + 2 * i,
                 );
             }
             for _ in 0..thickness {
                 draw_rect(0, 0, w, h);
             }
+
             if let Some(win) = area_win.as_mut() {
-                // win.set_pos(start_x, start_y);
-                // win.set_size(end_x - start_x, end_y - start_y);
-                win.resize(start_x, start_y, end_x - start_x, end_y - start_y);
-                if let Some(f) = area_frame.as_mut() {
-                    f.set_pos(-start_x, -start_y);
-                }
+                win.resize(left, top, right - left, bottom - top);
+                // win.resize(0, 0, right - left, bottom - top);
+            }
+            if let Some(f) = area_frame.as_mut() {
+                f.set_pos(-left, -top);
             }
         });
         f.redraw();
@@ -283,7 +289,7 @@ fn main() {
                         buf.height as i32,
                         ColorDepth::Rgba8,
                     )
-                        .unwrap();
+                    .unwrap();
                     let grayscale_screenshot = fltk_screenshot.convert(ColorDepth::L8).unwrap();
                     if let Some(frame) = msg_frame.as_mut() {
                         frame.set_image_scaled(Some(grayscale_screenshot));

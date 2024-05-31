@@ -1,1 +1,1 @@
-启动后 alt+n 截图 截图中可以按Esc 退出截图  BackSpace||Esc删除截图
+After startup, press alt+n to take a screenshot. During the screenshot, you can press Esc to exit the screenshot. Press (BackSpace || Esc) to delete the existing screenshot.

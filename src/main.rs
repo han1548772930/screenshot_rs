@@ -1,16 +1,16 @@
 #![windows_subsystem = "windows"]
 
-use fltk::app;
 use fltk::app::{event_coords, event_x, event_x_root, event_y, event_y_root};
 use fltk::draw::{draw_rect, set_draw_color};
 use fltk::enums::{Color, ColorDepth, Event, Key};
 use fltk::frame::Frame;
 use fltk::image::RgbImage;
+use fltk::{app, draw, enums};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
 use fltk::prelude::{GroupExt, ImageExt, WidgetBase, WidgetExt, WindowExt};
-use fltk::window::Window;
+use fltk::window::{OverlayWindow, Window};
 use image::{DynamicImage, GenericImageView, RgbaImage};
 
 use inputbot::KeybdKey::{LAltKey, NKey};
@@ -49,10 +49,10 @@ pub enum Message {
 
 lazy_static! {
     // static ref ACTIVE_WINDOWS: Mutex<Vec<Window>> = Mutex::new(Vec::new());
-    static ref MSG_WINDOW: Arc<Mutex<Option<Window>>> = Arc::new(Mutex::new(None));
+    static ref MSG_WINDOW: Arc<Mutex<Option<OverlayWindow>>> = Arc::new(Mutex::new(None));
     static ref MSG_FRAME: Arc<Mutex<Option<Frame>>> = Arc::new(Mutex::new(None));
     static ref AREA_FRAME: Arc<Mutex<Option<Frame>>> = Arc::new(Mutex::new(None));
-    static ref AREA_WINDOW: Arc<Mutex<Option<Window>>> = Arc::new(Mutex::new(None));
+    static ref AREA_WINDOW: Arc<Mutex<Option<OverlayWindow>>> = Arc::new(Mutex::new(None));
     static ref IMG_C: Arc<Mutex<Option<DynamicImage>>> = Arc::new(Mutex::new(None));
 }
 fn main() {
@@ -65,14 +65,15 @@ fn main() {
     wind.end();
     wind.show();
 
-    let mut msg_wind = Window::new(0, 0, w2, h2, "Cropped Image");
+
+    let mut msg_wind = OverlayWindow::new(0, 0, w2, h2, "Cropped Image");
     let mut msg_frame = Frame::default_fill();
     msg_wind.add(&msg_frame);
     msg_wind.fullscreen(true);
     msg_wind.set_border(false);
     msg_wind.end();
 
-    let mut area_win = Window::new(0, 0, 20, 20, "");
+    let mut area_win = OverlayWindow::new(0, 0, 20, 20, "");
     let area_frame = Frame::new(0, 0, w2, h2, "");
     area_win.set_border(false);
     area_win.add(&area_frame);
@@ -247,9 +248,9 @@ fn main() {
             if let Some(win) = area_win.as_mut() {
                 win.resize(left, top, right - left, bottom - top);
                 // win.resize(0, 0, right - left, bottom - top);
-            }
-            if let Some(f) = area_frame.as_mut() {
-                f.set_pos(-left, -top);
+                if let Some(f) = area_frame.as_mut() {
+                    f.set_pos(-left, -top);
+                }
             }
         });
         f.redraw();

@@ -1,4 +1,4 @@
-#![windows_subsystem = "windows"]
+// #![windows_subsystem = "windows"]
 
 use fltk::app::{event_coords, event_x, event_x_root, event_y, event_y_root};
 use fltk::draw::{draw_rect, set_draw_color};
@@ -56,16 +56,16 @@ lazy_static! {
     static ref IMG_C: Arc<Mutex<Option<DynamicImage>>> = Arc::new(Mutex::new(None));
 }
 fn main() {
-    let (w, h, w2, h2, proportion) = get_win_info();
+    let (w, h, proportion) = get_win_info();
     let app = app::App::default();
-    app::set_screen_scale(0, proportion);
+    app::set_screen_scale(0, 1.0);
     let mut wind = Window::new(0, 0, 1, 1, "");
 
     wind.set_border(false);
     wind.end();
     wind.show();
 
-    let mut msg_wind = OverlayWindow::new(0, 0, w2, h2, "Cropped Image");
+    let mut msg_wind = OverlayWindow::new(0, 0, w, h, "Cropped Image");
     let mut msg_frame = Frame::default_fill();
     msg_wind.add(&msg_frame);
     msg_wind.fullscreen(true);
@@ -73,7 +73,7 @@ fn main() {
     msg_wind.end();
 
     let mut area_win = OverlayWindow::new(0, 0, 20, 20, "");
-    let area_frame = Frame::new(0, 0, w2, h2, "");
+    let area_frame = Frame::new(0, 0, w, h, "");
     area_win.set_border(false);
     area_win.add(&area_frame);
     area_win.end();
@@ -107,22 +107,22 @@ fn main() {
                 if let Some(w) = area_wind.as_mut() {
                     w.show();
                 }
-                start_x = event_x();
-                start_y = event_y();
+                start_x = event_x_root();
+                start_y = event_y_root();
                 f.redraw();
                 true
             }
             Event::Drag => {
-                left = start_x.min(event_x());
-                top = start_y.min(event_y());
-                right = start_x.max(event_x());
-                bottom = start_y.max(event_y());
+                left = start_x.min(event_x_root());
+                top = start_y.min(event_y_root());
+                right = start_x.max(event_x_root());
+                bottom = start_y.max(event_y_root());
                 f.redraw();
                 true
             }
             Event::Released => {
-                let w = ((right - left) as f32 * proportion) as u32;
-                let h = ((bottom - top) as f32 * proportion) as u32;
+                let w = ((right - left) ) as u32;
+                let h = ((bottom - top)) as u32;
                 if w <= 0 || h <= 0 {
                     let mut area_wind = area_wind_clone.lock().unwrap();
                     if let Some(w) = area_wind.as_mut() {
@@ -130,11 +130,10 @@ fn main() {
                     }
                     return true;
                 }
-                let start_x_n = (left as f32 * proportion) as u32;
-                let start_y_n = (top as f32 * proportion) as u32;
+            
                 let img_c_guard = img_c.lock().unwrap();
                 let img_c = img_c_guard.as_ref();
-                let cropped_img = img_c.unwrap().view(start_x_n, start_y_n, w, h).to_image();
+                let cropped_img = img_c.unwrap().view(left as u32, top as u32, w, h).to_image();
                 let cropped_rgb_image = RgbImage::new(
                     (&cropped_img.into_iter()).as_ref(),
                     w as i32,
@@ -300,7 +299,7 @@ fn main() {
                         f.set_image(Some(fltk_screenshot));
                     }
                     if let Some(win) = msg_w.as_mut() {
-                        win.set_size(w2, h2);
+                        win.set_size(w, h);
                         win.fullscreen(true);
                         // win.make_current();
                     }

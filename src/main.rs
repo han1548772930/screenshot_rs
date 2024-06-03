@@ -65,7 +65,6 @@ fn main() {
     wind.end();
     wind.show();
 
-
     let mut msg_wind = OverlayWindow::new(0, 0, w2, h2, "Cropped Image");
     let mut msg_frame = Frame::default_fill();
     msg_wind.add(&msg_frame);
@@ -260,6 +259,7 @@ fn main() {
     *MSG_WINDOW.lock().unwrap() = Some(msg_wind);
     let (s, r) = app::channel::<Message>();
     thread::spawn(move || {
+        thread::yield_now();
         LAltKey.bind(move || {
             let img_c = Arc::clone(&IMG_C);
             let msg_w = Arc::clone(&MSG_WINDOW);
@@ -326,6 +326,7 @@ fn main() {
         systray::dispatch_thread_events_with_callback(move || {
             if wind.shown() {
                 while app.wait() {
+                    thread::yield_now();
                     if let Some(msg) = r.recv() {
                         let mut msg_wind = msg_wind_clone.lock().unwrap();
                         match msg {

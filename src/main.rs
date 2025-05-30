@@ -8,10 +8,25 @@ use freya::prelude::*;
 use screenshots::Screen;
 use skia_safe::{
     AlphaType, Color, ColorType, Data, Image as SkiaImage, ImageInfo, Paint, PaintStyle,
-    PathEffect, Rect, canvas::SrcRectConstraint,
+    PathEffect, Rect, canvas::SrcRectConstraint, images,
 };
 use std::sync::Arc;
 use winit::window::WindowLevel;
+
+// 常量定义
+mod constants {
+    pub const HANDLE_SIZE: f32 = 6.0;
+    pub const HANDLE_DETECT_SIZE: f32 = 8.0;
+    pub const BUTTON_WIDTH: f32 = 40.0;
+    pub const BUTTON_HEIGHT: f32 = 30.0;
+    pub const BUTTON_SPACING: f32 = 5.0;
+    pub const TOTAL_BUTTONS: f32 = 5.0;
+    pub const MIN_SELECTION_SIZE: f32 = 10.0;
+    pub const TOOLBAR_MARGIN: f32 = 15.0;
+    pub const SCREEN_MARGIN: f32 = 10.0;
+}
+
+use constants::*;
 
 fn main() {
     let display_infos = DisplayInfo::all().unwrap();
@@ -30,7 +45,6 @@ fn main() {
     );
 }
 
-// 定义调整大小的手柄类型
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum ResizeHandle {
     TopLeft,
@@ -43,40 +57,483 @@ enum ResizeHandle {
     Left,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum AppState {
+    Selecting,
+    Dragging,
+    Resizing,
+    Idle,
+}
+
+// 选择框结构
+#[derive(Debug, Clone, Copy)]
+struct Selection {
+    start: (f32, f32),
+    end: (f32, f32),
+}
+
+impl Selection {
+    fn bounds(&self) -> (f32, f32, f32, f32) {
+        let left = self.start.0.min(self.end.0);
+        let right = self.start.0.max(self.end.0);
+        let top = self.start.1.min(self.end.1);
+        let bottom = self.start.1.max(self.end.1);
+        (left, top, right, bottom)
+    }
+
+    fn center(&self) -> (f32, f32) {
+        let (left, top, right, bottom) = self.bounds();
+        ((left + right) / 2.0, (top + bottom) / 2.0)
+    }
+
+    fn size(&self) -> (f32, f32) {
+        let (left, top, right, bottom) = self.bounds();
+        (right - left, bottom - top)
+    }
+}
+
+// 工具栏计算
+struct Toolbar {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+}
+
+impl Toolbar {
+    fn calculate(selection: &Selection, screen_size: (u32, u32)) -> Self {
+        let (left, top, right, bottom) = selection.bounds();
+        let center_x = (left + right) / 2.0;
+
+        let width = TOTAL_BUTTONS * BUTTON_WIDTH + (TOTAL_BUTTONS - 1.0) * BUTTON_SPACING;
+        let height = BUTTON_HEIGHT;
+
+        // 默认位置（选择框下方）
+        let default_y = bottom + TOOLBAR_MARGIN;
+        let toolbar_bottom = default_y + height;
+
+        // 检查是否需要移动到上方
+        let y = if toolbar_bottom > screen_size.1 as f32 - SCREEN_MARGIN {
+            top - height - TOOLBAR_MARGIN
+        } else {
+            default_y
+        }
+        .max(SCREEN_MARGIN);
+
+        // 水平居中，但不超出屏幕边界
+        let x = (center_x - width / 2.0)
+            .max(SCREEN_MARGIN)
+            .min(screen_size.0 as f32 - width - SCREEN_MARGIN);
+
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    fn contains_point(&self, x: f32, y: f32) -> bool {
+        x >= self.x && x <= self.x + self.width && y >= self.y && y <= self.y + self.height
+    }
+
+    fn get_button_index(&self, x: f32, y: f32) -> Option<usize> {
+        if !self.contains_point(x, y) {
+            return None;
+        }
+        let relative_x = x - self.x;
+        let index = (relative_x / (BUTTON_WIDTH + BUTTON_SPACING)).floor() as usize;
+        if index < 5 { Some(index) } else { None }
+    }
+}
+
+// 几何工具函数
+mod geometry {
+    use super::*;
+
+    pub fn point_in_rect(x: f32, y: f32, selection: &Selection) -> bool {
+        let (left, top, right, bottom) = selection.bounds();
+        x >= left && x <= right && y >= top && y <= bottom
+    }
+
+    pub fn get_resize_handle(x: f32, y: f32, selection: &Selection) -> Option<ResizeHandle> {
+        let (left, top, right, bottom) = selection.bounds();
+        let center_x = (left + right) / 2.0;
+        let center_y = (top + bottom) / 2.0;
+
+        // 检查角手柄
+        if (x - left).abs() <= HANDLE_DETECT_SIZE && (y - top).abs() <= HANDLE_DETECT_SIZE {
+            return Some(ResizeHandle::TopLeft);
+        }
+        if (x - right).abs() <= HANDLE_DETECT_SIZE && (y - top).abs() <= HANDLE_DETECT_SIZE {
+            return Some(ResizeHandle::TopRight);
+        }
+        if (x - right).abs() <= HANDLE_DETECT_SIZE && (y - bottom).abs() <= HANDLE_DETECT_SIZE {
+            return Some(ResizeHandle::BottomRight);
+        }
+        if (x - left).abs() <= HANDLE_DETECT_SIZE && (y - bottom).abs() <= HANDLE_DETECT_SIZE {
+            return Some(ResizeHandle::BottomLeft);
+        }
+
+        // 检查边手柄
+        if (x - center_x).abs() <= HANDLE_DETECT_SIZE && (y - top).abs() <= HANDLE_DETECT_SIZE {
+            return Some(ResizeHandle::Top);
+        }
+        if (x - right).abs() <= HANDLE_DETECT_SIZE && (y - center_y).abs() <= HANDLE_DETECT_SIZE {
+            return Some(ResizeHandle::Right);
+        }
+        if (x - center_x).abs() <= HANDLE_DETECT_SIZE && (y - bottom).abs() <= HANDLE_DETECT_SIZE {
+            return Some(ResizeHandle::Bottom);
+        }
+        if (x - left).abs() <= HANDLE_DETECT_SIZE && (y - center_y).abs() <= HANDLE_DETECT_SIZE {
+            return Some(ResizeHandle::Left);
+        }
+
+        None
+    }
+
+    pub fn get_resize_anchor(handle: ResizeHandle, selection: &Selection) -> (f32, f32) {
+        let (left, top, right, bottom) = selection.bounds();
+        match handle {
+            ResizeHandle::TopLeft => (right, bottom),
+            ResizeHandle::TopRight => (left, bottom),
+            ResizeHandle::BottomRight => (left, top),
+            ResizeHandle::BottomLeft => (right, top),
+            ResizeHandle::Top | ResizeHandle::Bottom => (
+                left,
+                if handle == ResizeHandle::Top {
+                    bottom
+                } else {
+                    top
+                },
+            ),
+            ResizeHandle::Left | ResizeHandle::Right => (
+                if handle == ResizeHandle::Left {
+                    right
+                } else {
+                    left
+                },
+                top,
+            ),
+        }
+    }
+
+    pub fn constrain_to_screen(selection: Selection, screen_size: (u32, u32)) -> Selection {
+        let (width, height) = selection.size();
+        let screen_w = screen_size.0 as f32;
+        let screen_h = screen_size.1 as f32;
+
+        let left = selection
+            .start
+            .0
+            .min(selection.end.0)
+            .max(0.0)
+            .min(screen_w - width);
+        let top = selection
+            .start
+            .1
+            .min(selection.end.1)
+            .max(0.0)
+            .min(screen_h - height);
+
+        Selection {
+            start: (left, top),
+            end: (left + width, top + height),
+        }
+    }
+}
+
+// 绘制工具
+mod rendering {
+    use freya::core::custom_attributes::CanvasRunnerContext;
+
+    use super::*;
+
+    pub fn draw_selection_area(
+        ctx: &mut CanvasRunnerContext,
+        img: &SkiaImage,
+        selection: &Selection,
+    ) {
+        let (left, top, right, bottom) = selection.bounds();
+        let canvas_width = ctx.area.width();
+        let canvas_height = ctx.area.height();
+
+        let clipped_left = left.max(0.0);
+        let clipped_top = top.max(0.0);
+        let clipped_right = right.min(canvas_width);
+        let clipped_bottom = bottom.min(canvas_height);
+
+        if clipped_right > clipped_left && clipped_bottom > clipped_top {
+            let selection_rect = Rect::from_xywh(
+                clipped_left,
+                clipped_top,
+                clipped_right - clipped_left,
+                clipped_bottom - clipped_top,
+            );
+            let src_rect = Rect::from_xywh(
+                clipped_left,
+                clipped_top,
+                clipped_right - clipped_left,
+                clipped_bottom - clipped_top,
+            );
+
+            ctx.canvas.draw_image_rect(
+                img,
+                Some((&src_rect, SrcRectConstraint::Fast)),
+                selection_rect,
+                &Paint::default(),
+            );
+        }
+    }
+
+    pub fn draw_selection_border(
+        ctx: &mut CanvasRunnerContext,
+        selection: &Selection,
+        state: AppState,
+    ) {
+        let (left, top, right, bottom) = selection.bounds();
+        let mut paint = Paint::default();
+        paint.set_style(PaintStyle::Stroke);
+        paint.set_anti_alias(true);
+        paint.set_stroke_width(1.0);
+
+        // 根据状态设置颜色
+        let color = match state {
+            AppState::Selecting => Color::from_rgb(0, 255, 0),
+            _ => Color::from_rgb(0, 255, 255),
+        };
+        paint.set_color(color);
+
+        // 如果是选择状态，添加虚线效果
+        if state == AppState::Selecting {
+            if let Some(dash_effect) = PathEffect::dash(&[8.0, 4.0], 0.0) {
+                paint.set_path_effect(dash_effect);
+            }
+        }
+
+        let rect = Rect::from_xywh(left, top, right - left, bottom - top);
+        ctx.canvas.draw_rect(rect, &paint);
+    }
+
+    pub fn draw_handles(ctx: &mut CanvasRunnerContext, selection: &Selection) {
+        let (left, top, right, bottom) = selection.bounds();
+        let center_x = (left + right) / 2.0;
+        let center_y = (top + bottom) / 2.0;
+
+        let mut handle_paint = Paint::default();
+        handle_paint.set_color(Color::from_rgb(255, 255, 255));
+        handle_paint.set_anti_alias(true);
+
+        let mut border_paint = Paint::default();
+        border_paint.set_color(Color::from_rgb(0, 0, 0));
+        border_paint.set_style(PaintStyle::Stroke);
+        border_paint.set_stroke_width(1.0);
+        border_paint.set_anti_alias(true);
+
+        let handles = [
+            (left, top),
+            (center_x, top),
+            (right, top),
+            (right, center_y),
+            (right, bottom),
+            (center_x, bottom),
+            (left, bottom),
+            (left, center_y),
+        ];
+
+        for (x, y) in handles {
+            let rect = Rect::from_xywh(
+                x - HANDLE_SIZE,
+                y - HANDLE_SIZE,
+                HANDLE_SIZE * 2.0,
+                HANDLE_SIZE * 2.0,
+            );
+            ctx.canvas.draw_rect(rect, &handle_paint);
+            ctx.canvas.draw_rect(rect, &border_paint);
+        }
+    }
+
+    pub fn draw_toolbar(ctx: &mut CanvasRunnerContext, toolbar: &Toolbar, selection: &Selection) {
+        let buttons = ["save", "copy", "edit", "share", "close"];
+
+        let mut button_paint = Paint::default();
+        button_paint.set_color(Color::from_argb(220, 45, 45, 45));
+        button_paint.set_anti_alias(true);
+
+        let mut border_paint = Paint::default();
+        border_paint.set_color(Color::from_rgb(180, 180, 180));
+        border_paint.set_style(PaintStyle::Stroke);
+        border_paint.set_stroke_width(1.0);
+        border_paint.set_anti_alias(true);
+
+        for (i, icon_type) in buttons.iter().enumerate() {
+            let button_x = toolbar.x + i as f32 * (BUTTON_WIDTH + BUTTON_SPACING);
+            let button_rect = Rect::from_xywh(button_x, toolbar.y, BUTTON_WIDTH, BUTTON_HEIGHT);
+
+            ctx.canvas
+                .draw_round_rect(button_rect, 4.0, 4.0, &button_paint);
+            ctx.canvas
+                .draw_round_rect(button_rect, 4.0, 4.0, &border_paint);
+
+            draw_icon(
+                ctx,
+                icon_type,
+                button_x + BUTTON_WIDTH / 2.0,
+                toolbar.y + BUTTON_HEIGHT / 2.0,
+            );
+        }
+    }
+
+    fn draw_icon(ctx: &mut CanvasRunnerContext, icon_type: &str, center_x: f32, center_y: f32) {
+        let mut paint = Paint::default();
+        paint.set_color(Color::from_rgb(255, 255, 255));
+        paint.set_stroke_width(2.0);
+        paint.set_anti_alias(true);
+
+        let size = 8.0;
+
+        match icon_type {
+            "save" => {
+                let rect =
+                    Rect::from_xywh(center_x - size, center_y - size, size * 2.0, size * 2.0);
+                ctx.canvas.draw_rect(rect, &paint);
+            }
+            "copy" => {
+                paint.set_style(PaintStyle::Stroke);
+                let rect1 =
+                    Rect::from_xywh(center_x - size, center_y - size, size * 1.5, size * 1.5);
+                let rect2 = Rect::from_xywh(
+                    center_x - size * 0.5,
+                    center_y - size * 0.5,
+                    size * 1.5,
+                    size * 1.5,
+                );
+                ctx.canvas.draw_rect(rect1, &paint);
+                ctx.canvas.draw_rect(rect2, &paint);
+            }
+            "edit" => {
+                ctx.canvas.draw_line(
+                    (center_x - size, center_y + size),
+                    (center_x + size, center_y - size),
+                    &paint,
+                );
+                ctx.canvas
+                    .draw_circle((center_x + size * 0.7, center_y - size * 0.7), 2.0, &paint);
+            }
+            "share" => {
+                ctx.canvas.draw_line(
+                    (center_x - size, center_y),
+                    (center_x + size, center_y),
+                    &paint,
+                );
+                ctx.canvas.draw_line(
+                    (center_x + size, center_y),
+                    (center_x + size * 0.5, center_y - size * 0.5),
+                    &paint,
+                );
+                ctx.canvas.draw_line(
+                    (center_x + size, center_y),
+                    (center_x + size * 0.5, center_y + size * 0.5),
+                    &paint,
+                );
+            }
+            "close" => {
+                ctx.canvas.draw_line(
+                    (center_x - size * 0.7, center_y - size * 0.7),
+                    (center_x + size * 0.7, center_y + size * 0.7),
+                    &paint,
+                );
+                ctx.canvas.draw_line(
+                    (center_x + size * 0.7, center_y - size * 0.7),
+                    (center_x - size * 0.7, center_y + size * 0.7),
+                    &paint,
+                );
+            }
+            _ => {}
+        }
+    }
+}
+// 添加光标类型转换函数
+fn resize_handle_to_cursor(handle: ResizeHandle) -> CursorIcon {
+    match handle {
+        ResizeHandle::TopLeft | ResizeHandle::BottomRight => CursorIcon::NwResize,
+        ResizeHandle::TopRight | ResizeHandle::BottomLeft => CursorIcon::NeResize,
+        ResizeHandle::Top | ResizeHandle::Bottom => CursorIcon::NsResize,
+        ResizeHandle::Left | ResizeHandle::Right => CursorIcon::EwResize,
+    }
+}
+
+// 在 app 函数中添加光标状态管理
 fn app() -> Element {
     let platform = use_platform();
     let dpi_scale = consume_context::<f32>();
 
-    let mut mouse_pos = use_signal(|| (0.0f32, 0.0f32));
-    let (reference, size) = use_node_signal();
-    let mut screenshot_data = use_signal::<Option<Arc<Vec<u8>>>>(|| None);
-    let mut screen_size = use_signal(|| (0u32, 0u32));
+    // 状态管理（保持原有的）
     let mut screenshot_image = use_signal::<Option<SkiaImage>>(|| None);
-
-    // 框选相关状态
-    let mut is_selecting = use_signal(|| false);
-    let mut selection_start = use_signal::<Option<(f32, f32)>>(|| None);
-    let mut selection_end = use_signal::<Option<(f32, f32)>>(|| None);
-    let mut current_selection = use_signal::<Option<((f32, f32), (f32, f32))>>(|| None);
-
-    // 拖动相关状态
-    let mut is_dragging = use_signal(|| false);
+    let mut screen_size = use_signal(|| (0u32, 0u32));
+    let mut mouse_pos = use_signal(|| (0.0f32, 0.0f32));
+    let mut app_state = use_signal(|| AppState::Idle);
+    let mut current_selection = use_signal::<Option<Selection>>(|| None);
     let mut drag_offset = use_signal::<Option<(f32, f32)>>(|| None);
-
-    // 调整大小相关状态
-    let mut is_resizing = use_signal(|| false);
     let mut resize_handle = use_signal::<Option<ResizeHandle>>(|| None);
-    let mut resize_anchor = use_signal::<Option<(f32, f32)>>(|| None); // 调整大小时的固定点
+    let mut resize_anchor = use_signal::<Option<(f32, f32)>>(|| None);
+    let mut temp_selection = use_signal::<Option<Selection>>(|| None);
 
+    let (reference, size) = use_node_signal();
+
+    // 添加光标状态计算函数
+    let get_cursor_icon = move || -> CursorIcon {
+        let (x, y) = *mouse_pos.read();
+        let current_state = *app_state.read();
+
+        match current_state {
+            AppState::Selecting => CursorIcon::Crosshair,
+            AppState::Dragging => CursorIcon::Move,
+            AppState::Resizing => {
+                if let Some(handle) = *resize_handle.read() {
+                    resize_handle_to_cursor(handle)
+                } else {
+                    CursorIcon::Default
+                }
+            }
+            AppState::Idle => {
+                // 悬停检测（空闲状态）
+                if let Some(selection) = *current_selection.read() {
+                    let toolbar = Toolbar::calculate(&selection, *screen_size.read());
+
+                    // 检查是否悬停在工具栏按钮上
+                    if toolbar.contains_point(x, y) {
+                        return CursorIcon::Pointer;
+                    }
+
+                    // 检查是否悬停在调整大小手柄上
+                    if let Some(handle) = geometry::get_resize_handle(x, y, &selection) {
+                        return resize_handle_to_cursor(handle);
+                    }
+
+                    // 检查是否悬停在选择框内
+                    if geometry::point_in_rect(x, y, &selection) {
+                        return CursorIcon::Move;
+                    }
+
+                    // 悬停在选择框外 - 禁止点击
+                    CursorIcon::NotAllowed
+                } else {
+                    // 没有选择框
+                    CursorIcon::Default
+                }
+            }
+        }
+    };
+
+    // 初始化逻辑（保持不变）
     use_effect(move || {
         platform.with_window(|w| {
             w.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
             w.set_cursor_visible(true);
             w.focus_window();
         });
-    });
 
-    let take_screenshot = move || {
         spawn(async move {
             if let Ok(screens) = Screen::all() {
                 if let Some(screen) = screens.first() {
@@ -86,7 +543,6 @@ fn app() -> Element {
                         let data = image.into_raw();
 
                         screen_size.set((width, height));
-                        screenshot_data.set(Some(Arc::new(data.clone())));
 
                         let image_info = ImageInfo::new(
                             (width as i32, height as i32),
@@ -95,812 +551,267 @@ fn app() -> Element {
                             None,
                         );
 
-                        let skia_data = Data::new_copy(&data);
-                        if let Some(skia_img) = SkiaImage::from_raster_data(
+                        if let Some(skia_img) = images::raster_from_data(
                             &image_info,
-                            skia_data,
+                            Data::new_copy(&data),
                             (width * 4) as usize,
                         ) {
                             screenshot_image.set(Some(skia_img));
                         }
-                        println!("截屏成功: {}x{}", width, height);
                     }
                 }
             }
         });
-    };
-
-    use_effect(move || {
-        take_screenshot();
     });
 
-    // 检查点是否在矩形内的函数
-    let point_in_rect = |x: f32, y: f32, rect_start: (f32, f32), rect_end: (f32, f32)| -> bool {
-        let left = rect_start.0.min(rect_end.0);
-        let right = rect_start.0.max(rect_end.0);
-        let top = rect_start.1.min(rect_end.1);
-        let bottom = rect_start.1.max(rect_end.1);
-
-        x >= left && x <= right && y >= top && y <= bottom
-    };
-
-    // 检查点是否在调整大小手柄上
-    let get_resize_handle =
-        |x: f32, y: f32, rect_start: (f32, f32), rect_end: (f32, f32)| -> Option<ResizeHandle> {
-            let left = rect_start.0.min(rect_end.0);
-            let right = rect_start.0.max(rect_end.0);
-            let top = rect_start.1.min(rect_end.1);
-            let bottom = rect_start.1.max(rect_end.1);
-
-            let handle_size = 8.0; // 手柄检测区域大小
-
-            // 四个角的手柄
-            if (x - left).abs() <= handle_size && (y - top).abs() <= handle_size {
-                return Some(ResizeHandle::TopLeft);
-            }
-            if (x - right).abs() <= handle_size && (y - top).abs() <= handle_size {
-                return Some(ResizeHandle::TopRight);
-            }
-            if (x - right).abs() <= handle_size && (y - bottom).abs() <= handle_size {
-                return Some(ResizeHandle::BottomRight);
-            }
-            if (x - left).abs() <= handle_size && (y - bottom).abs() <= handle_size {
-                return Some(ResizeHandle::BottomLeft);
-            }
-
-            // 四条边中点的手柄
-            let center_x = (left + right) / 2.0;
-            let center_y = (top + bottom) / 2.0;
-
-            if (x - center_x).abs() <= handle_size && (y - top).abs() <= handle_size {
-                return Some(ResizeHandle::Top);
-            }
-            if (x - right).abs() <= handle_size && (y - center_y).abs() <= handle_size {
-                return Some(ResizeHandle::Right);
-            }
-            if (x - center_x).abs() <= handle_size && (y - bottom).abs() <= handle_size {
-                return Some(ResizeHandle::Bottom);
-            }
-            if (x - left).abs() <= handle_size && (y - center_y).abs() <= handle_size {
-                return Some(ResizeHandle::Left);
-            }
-
-            None
-        };
-    let point_in_buttons = |x: f32, y: f32, selection: ((f32, f32), (f32, f32))| -> bool {
-        let ((start_x, start_y), (end_x, end_y)) = selection;
-        let left = start_x.min(end_x);
-        let right = start_x.max(end_x);
-        let bottom = start_y.max(end_y);
-        let center_x = (left + right) / 2.0;
-
-        // 按钮参数（与绘制时保持一致）
-        let toolbar_y = bottom + 15.0;
-        let button_width = 40.0;
-        let button_height = 30.0;
-        let button_spacing = 5.0;
-        let total_buttons = 5.0;
-        let total_width = total_buttons * button_width + (total_buttons - 1.0) * button_spacing;
-        let toolbar_start_x = center_x - total_width / 2.0;
-
-        // 检查是否在按钮区域内
-        x >= toolbar_start_x
-            && x <= toolbar_start_x + total_width
-            && y >= toolbar_y
-            && y <= toolbar_y + button_height
-    };
-
-    let get_cursor_icon = move || -> CursorIcon {
-        let (x, y) = *mouse_pos.read();
-
-        // 根据当前状态确定光标
-        if *is_selecting.read() {
-            CursorIcon::Crosshair
-        } else if *is_dragging.read() {
-            CursorIcon::Move
-        } else if *is_resizing.read() {
-            // 根据调整手柄类型确定光标
-            match *resize_handle.read() {
-                Some(ResizeHandle::TopLeft) | Some(ResizeHandle::BottomRight) => {
-                    CursorIcon::NwResize
-                }
-                Some(ResizeHandle::TopRight) | Some(ResizeHandle::BottomLeft) => {
-                    CursorIcon::NeResize
-                }
-                Some(ResizeHandle::Top) | Some(ResizeHandle::Bottom) => CursorIcon::NsResize,
-                Some(ResizeHandle::Left) | Some(ResizeHandle::Right) => CursorIcon::EwResize,
-                None => CursorIcon::Default,
-            }
-        } else {
-            // 悬停检测（空闲状态）
-            if let Some(((start_x, start_y), (end_x, end_y))) = *current_selection.read() {
-                if let Some(handle) = get_resize_handle(x, y, (start_x, start_y), (end_x, end_y)) {
-                    // 悬停在调整手柄上
-                    match handle {
-                        ResizeHandle::TopLeft | ResizeHandle::BottomRight => CursorIcon::NwResize,
-                        ResizeHandle::TopRight | ResizeHandle::BottomLeft => CursorIcon::NeResize,
-                        ResizeHandle::Top | ResizeHandle::Bottom => CursorIcon::NsResize,
-                        ResizeHandle::Left | ResizeHandle::Right => CursorIcon::EwResize,
-                    }
-                } else if point_in_rect(x, y, (start_x, start_y), (end_x, end_y)) {
-                    // 悬停在选择框内
-                    CursorIcon::Move
-                } else if point_in_buttons(x, y, ((start_x, start_y), (end_x, end_y))) {
-                    // 悬停在按钮区域 - 允许点击
-                    CursorIcon::Pointer
-                } else {
-                    // 悬停在选择框外且不在按钮区域 - 禁止点击
-                    CursorIcon::NotAllowed
-                }
-            } else {
-                // 没有选择框
-                CursorIcon::Default
-            }
+    // 事件处理函数（保持你重构后的逻辑）
+    let handle_mouse_down = move |e: MouseEvent| {
+        if e.trigger_button == Some(MouseButton::Right) {
+            platform.exit();
+            return;
         }
+
+        let coords = e.get_element_coordinates();
+        let pos = (coords.x as f32 * dpi_scale, coords.y as f32 * dpi_scale);
+
+        if let Some(selection) = *current_selection.read() {
+            let toolbar = Toolbar::calculate(&selection, *screen_size.read());
+
+            // 检查工具栏按钮点击
+            if let Some(button_index) = toolbar.get_button_index(pos.0, pos.1) {
+                match button_index {
+                    0 => println!("保存"),
+                    1 => println!("复制"),
+                    2 => println!("编辑"),
+                    3 => println!("分享"),
+                    4 => {
+                        // current_selection.set(None);
+                        app_state.set(AppState::Idle);
+                    }
+                    _ => {}
+                }
+                return;
+            }
+
+            // 检查调整大小手柄
+            if let Some(handle) = geometry::get_resize_handle(pos.0, pos.1, &selection) {
+                app_state.set(AppState::Resizing);
+                resize_handle.set(Some(handle));
+                resize_anchor.set(Some(geometry::get_resize_anchor(handle, &selection)));
+                return;
+            }
+
+            // 检查拖拽
+            if geometry::point_in_rect(pos.0, pos.1, &selection) {
+                app_state.set(AppState::Dragging);
+                let (left, top, _, _) = selection.bounds();
+                drag_offset.set(Some((pos.0 - left, pos.1 - top)));
+                return;
+            }
+
+            // 如果点击在选择框外面，忽略点击事件（不处理）
+            println!("点击在选择框外，忽略点击事件");
+            return;
+        }
+
+        // 只有在没有现有选择框的情况下才开始新的选择
+        app_state.set(AppState::Selecting);
+        temp_selection.set(Some(Selection {
+            start: pos,
+            end: pos,
+        }));
+        current_selection.set(None);
     };
 
-    let canvas = use_canvas(move || {
-        platform.invalidate_drawing_area(size.peek().area);
-        platform.request_animation_frame();
+    // 鼠标移动和释放事件处理（保持你重构后的代码）
+    let handle_mouse_move = move |e: MouseEvent| {
+        let coords = e.get_element_coordinates();
+        let pos = (coords.x as f32 * dpi_scale, coords.y as f32 * dpi_scale);
+        mouse_pos.set(pos);
 
-        let screenshot = screenshot_image.read().clone();
-        let is_sel = *is_selecting.read();
-        let is_drag = *is_dragging.read();
-        let is_resize = *is_resizing.read();
-        let sel_start = *selection_start.read();
-        let sel_end = *selection_end.read();
-        let current_sel = *current_selection.read();
+        let current_state = *app_state.read();
 
-        move |ctx| {
-            ctx.canvas.clear(Color::TRANSPARENT);
-
-            // 绘制截屏背景
-            if let Some(img) = &screenshot {
-                let canvas_width = ctx.area.width();
-                let canvas_height = ctx.area.height();
-                let dest_rect = Rect::from_xywh(0.0, 0.0, canvas_width, canvas_height);
-
-                // 绘制完整背景图像
-                let background_paint = Paint::default();
-                ctx.canvas
-                    .draw_image_rect(img, None, dest_rect, &background_paint);
-
-                // 叠加黑色遮罩
-                let mut mask_paint = Paint::default();
-                mask_paint.set_color(Color::from_argb(160, 0, 0, 0));
-                ctx.canvas.draw_rect(dest_rect, &mask_paint);
-
-                // 处理选择区域
-                let active_selection = if is_sel {
-                    if let (Some((start_x, start_y)), Some((end_x, end_y))) = (sel_start, sel_end) {
-                        Some(((start_x, start_y), (end_x, end_y)))
-                    } else {
-                        None
-                    }
-                } else {
-                    current_sel
-                };
-
-                if let Some(((start_x, start_y), (end_x, end_y))) = active_selection {
-                    let left = start_x.min(end_x);
-                    let right = start_x.max(end_x);
-                    let top = start_y.min(end_y);
-                    let bottom = start_y.max(end_y);
-
-                    // 确保选择区域在画布范围内
-                    let clipped_left = left.max(0.0);
-                    let clipped_top = top.max(0.0);
-                    let clipped_right = right.min(canvas_width);
-                    let clipped_bottom = bottom.min(canvas_height);
-
-                    // 只有当选择区域有效时才绘制
-                    if clipped_right > clipped_left && clipped_bottom > clipped_top {
-                        let selection_rect = Rect::from_xywh(
-                            clipped_left,
-                            clipped_top,
-                            clipped_right - clipped_left,
-                            clipped_bottom - clipped_top,
-                        );
-
-                        // 绘制清晰的选择区域（移除遮罩）
-                        let clear_paint = Paint::default();
-                        let src_rect = Rect::from_xywh(
-                            clipped_left,
-                            clipped_top,
-                            clipped_right - clipped_left,
-                            clipped_bottom - clipped_top,
-                        );
-
-                        ctx.canvas.draw_image_rect(
-                            img,
-                            Some((&src_rect, SrcRectConstraint::Fast)),
-                            selection_rect,
-                            &clear_paint,
-                        );
-
-                        // 绘制选择框边框
-                        let mut selection_paint = Paint::default();
-                        selection_paint.set_style(PaintStyle::Stroke);
-                        selection_paint.set_anti_alias(true);
-
-                        match (is_sel, is_drag, is_resize) {
-                            (true, _, _) => {
-                                // 正在选择 - 绿色虚线
-                                selection_paint.set_color(Color::from_rgb(0, 255, 0));
-                                selection_paint.set_stroke_width(1.0);
-                                if let Some(dash_effect) = PathEffect::dash(&[8.0, 4.0], 0.0) {
-                                    selection_paint.set_path_effect(dash_effect);
-                                }
-                            }
-                            _ => {
-                                selection_paint.set_color(Color::from_rgb(0, 255, 255));
-                                selection_paint.set_stroke_width(1.0);
-                            }
-                        }
-
-                        // 使用原始的选择框坐标绘制边框（不裁剪）
-                        let border_rect = Rect::from_xywh(left, top, right - left, bottom - top);
-                        ctx.canvas.draw_rect(border_rect, &selection_paint);
-
-                        // 调试十字线（仅在选择时显示）
-                        if is_sel {
-                            let mut debug_paint = Paint::default();
-                            debug_paint.set_color(Color::from_rgb(255, 255, 0));
-                            debug_paint.set_stroke_width(2.0);
-                            debug_paint.set_anti_alias(true);
-
-                            let cross_size = 15.0;
-                            ctx.canvas.draw_line(
-                                (end_x - cross_size, end_y),
-                                (end_x + cross_size, end_y),
-                                &debug_paint,
-                            );
-                            ctx.canvas.draw_line(
-                                (end_x, end_y - cross_size),
-                                (end_x, end_y + cross_size),
-                                &debug_paint,
-                            );
-                            ctx.canvas.draw_circle((end_x, end_y), 3.0, &debug_paint);
-                        }
-
-                       
-                   
-
-                        // 绘制调整大小的手柄（仅在选择完成且没有正在进行其他操作时显示）
-                        if !is_sel && !is_drag && !is_resize {
-                            let mut handle_paint = Paint::default();
-                            handle_paint.set_color(Color::from_rgb(255, 255, 255));
-                            handle_paint.set_anti_alias(true);
-
-                            let mut handle_border_paint = Paint::default();
-                            handle_border_paint.set_color(Color::from_rgb(0, 0, 0));
-                            handle_border_paint.set_style(PaintStyle::Stroke);
-                            handle_border_paint.set_stroke_width(1.0);
-                            handle_border_paint.set_anti_alias(true);
-
-                            let handle_size = 6.0; // 增加手柄大小
-                            let center_x = (left + right) / 2.0;
-                            let center_y = (top + bottom) / 2.0;
-
-                            // 绘制8个调整大小的手柄
-                            let handles = [
-                                (left, top),        // TopLeft
-                                (center_x, top),    // Top
-                                (right, top),       // TopRight
-                                (right, center_y),  // Right
-                                (right, bottom),    // BottomRight
-                                (center_x, bottom), // Bottom
-                                (left, bottom),     // BottomLeft
-                                (left, center_y),   // Left
-                            ];
-
-                            for (handle_x, handle_y) in handles {
-                                // 创建小方点的矩形
-                                let handle_rect = Rect::from_xywh(
-                                    handle_x - handle_size,
-                                    handle_y - handle_size,
-                                    handle_size * 2.0,
-                                    handle_size * 2.0,
-                                );
-
-                                // 绘制白色填充方形
-                                ctx.canvas.draw_rect(handle_rect, &handle_paint);
-                                // 绘制黑色边框
-                                ctx.canvas.draw_rect(handle_rect, &handle_border_paint);
-                            }
-
-                            // 绘制拖动提示图标
-                            let center_x = (left + right) / 2.0;
-                            let center_y = (top + bottom) / 2.0;
-
-                            let mut hint_paint = Paint::default();
-                            hint_paint.set_color(Color::from_argb(120, 255, 255, 255));
-                            hint_paint.set_anti_alias(true);
-                            hint_paint.set_stroke_width(2.0);
-
-                            // 绘制十字移动图标
-                            let arrow_size = 10.0;
-                            ctx.canvas.draw_line(
-                                (center_x - arrow_size, center_y),
-                                (center_x + arrow_size, center_y),
-                                &hint_paint,
-                            );
-                            ctx.canvas.draw_line(
-                                (center_x, center_y - arrow_size),
-                                (center_x, center_y + arrow_size),
-                                &hint_paint,
-                            );
-
-                            // 绘制工具栏按钮
-                            let toolbar_y = bottom + 15.0; // 按钮距离选择框底部15像素
-                            let button_width = 40.0;
-                            let button_height = 30.0;
-                            let button_spacing = 5.0;
-
-                            // 计算工具栏起始位置（居中对齐）
-                            let total_buttons = 5.0;
-                            let total_width = total_buttons * button_width
-                                + (total_buttons - 1.0) * button_spacing;
-                            let toolbar_start_x = center_x - total_width / 2.0;
-
-                            // 按钮样式
-                            let mut button_paint = Paint::default();
-                            button_paint.set_color(Color::from_argb(220, 45, 45, 45)); // 半透明深灰色
-                            button_paint.set_anti_alias(true);
-
-                            let mut button_border_paint = Paint::default();
-                            button_border_paint.set_color(Color::from_rgb(180, 180, 180));
-                            button_border_paint.set_style(PaintStyle::Stroke);
-                            button_border_paint.set_stroke_width(1.0);
-                            button_border_paint.set_anti_alias(true);
-
-                            let mut icon_paint = Paint::default();
-                            icon_paint.set_color(Color::from_rgb(255, 255, 255));
-                            icon_paint.set_stroke_width(2.0);
-                            icon_paint.set_anti_alias(true);
-
-                            // 按钮定义：[图标类型, x偏移]
-                            let buttons = [
-                                ("save", 0.0),  // 保存
-                                ("copy", 1.0),  // 复制
-                                ("edit", 2.0),  // 编辑
-                                ("share", 3.0), // 分享
-                                ("close", 4.0), // 关闭
-                            ];
-
-                            for (icon_type, index) in buttons {
-                                let button_x =
-                                    toolbar_start_x + index * (button_width + button_spacing);
-                                let button_rect = Rect::from_xywh(
-                                    button_x,
-                                    toolbar_y,
-                                    button_width,
-                                    button_height,
-                                );
-
-                                // 绘制按钮背景
-                                ctx.canvas.draw_round_rect(
-                                    button_rect,
-                                    4.0, // 圆角半径
-                                    4.0,
-                                    &button_paint,
-                                );
-                                ctx.canvas.draw_round_rect(
-                                    button_rect,
-                                    4.0,
-                                    4.0,
-                                    &button_border_paint,
-                                );
-
-                                // 绘制图标
-                                let icon_center_x = button_x + button_width / 2.0;
-                                let icon_center_y = toolbar_y + button_height / 2.0;
-                                let icon_size = 8.0;
-
-                                match icon_type {
-                                    "save" => {
-                                        // 绘制保存图标（磁盘）
-                                        let disk_rect = Rect::from_xywh(
-                                            icon_center_x - icon_size,
-                                            icon_center_y - icon_size,
-                                            icon_size * 2.0,
-                                            icon_size * 2.0,
-                                        );
-                                        ctx.canvas.draw_rect(disk_rect, &icon_paint);
-                                        // 绘制磁盘标签
-                                        let label_rect = Rect::from_xywh(
-                                            icon_center_x - icon_size * 0.6,
-                                            icon_center_y - icon_size * 0.8,
-                                            icon_size * 1.2,
-                                            icon_size * 0.4,
-                                        );
-                                        let mut bg_paint = Paint::default();
-                                        bg_paint.set_color(Color::from_rgb(45, 45, 45));
-                                        ctx.canvas.draw_rect(label_rect, &bg_paint);
-                                    }
-                                    "copy" => {
-                                        // 绘制复制图标（两个重叠的方框）
-                                        let rect1 = Rect::from_xywh(
-                                            icon_center_x - icon_size,
-                                            icon_center_y - icon_size,
-                                            icon_size * 1.5,
-                                            icon_size * 1.5,
-                                        );
-                                        let rect2 = Rect::from_xywh(
-                                            icon_center_x - icon_size * 0.5,
-                                            icon_center_y - icon_size * 0.5,
-                                            icon_size * 1.5,
-                                            icon_size * 1.5,
-                                        );
-                                        icon_paint.set_style(PaintStyle::Stroke);
-                                        ctx.canvas.draw_rect(rect1, &icon_paint);
-                                        ctx.canvas.draw_rect(rect2, &icon_paint);
-                                        icon_paint.set_style(PaintStyle::Fill);
-                                    }
-                                    "edit" => {
-                                        // 绘制编辑图标（铅笔）
-                                        ctx.canvas.draw_line(
-                                            (icon_center_x - icon_size, icon_center_y + icon_size),
-                                            (icon_center_x + icon_size, icon_center_y - icon_size),
-                                            &icon_paint,
-                                        );
-                                        // 铅笔头
-                                        ctx.canvas.draw_circle(
-                                            (
-                                                icon_center_x + icon_size * 0.7,
-                                                icon_center_y - icon_size * 0.7,
-                                            ),
-                                            2.0,
-                                            &icon_paint,
-                                        );
-                                    }
-                                    "share" => {
-                                        // 绘制分享图标（箭头）
-                                        ctx.canvas.draw_line(
-                                            (icon_center_x - icon_size, icon_center_y),
-                                            (icon_center_x + icon_size, icon_center_y),
-                                            &icon_paint,
-                                        );
-                                        // 箭头头部
-                                        ctx.canvas.draw_line(
-                                            (icon_center_x + icon_size, icon_center_y),
-                                            (
-                                                icon_center_x + icon_size * 0.5,
-                                                icon_center_y - icon_size * 0.5,
-                                            ),
-                                            &icon_paint,
-                                        );
-                                        ctx.canvas.draw_line(
-                                            (icon_center_x + icon_size, icon_center_y),
-                                            (
-                                                icon_center_x + icon_size * 0.5,
-                                                icon_center_y + icon_size * 0.5,
-                                            ),
-                                            &icon_paint,
-                                        );
-                                    }
-                                    "close" => {
-                                        // 绘制关闭图标（X）
-                                        ctx.canvas.draw_line(
-                                            (
-                                                icon_center_x - icon_size * 0.7,
-                                                icon_center_y - icon_size * 0.7,
-                                            ),
-                                            (
-                                                icon_center_x + icon_size * 0.7,
-                                                icon_center_y + icon_size * 0.7,
-                                            ),
-                                            &icon_paint,
-                                        );
-                                        ctx.canvas.draw_line(
-                                            (
-                                                icon_center_x + icon_size * 0.7,
-                                                icon_center_y - icon_size * 0.7,
-                                            ),
-                                            (
-                                                icon_center_x - icon_size * 0.7,
-                                                icon_center_y + icon_size * 0.7,
-                                            ),
-                                            &icon_paint,
-                                        );
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                    }
+        match current_state {
+            AppState::Selecting => {
+                let temp_sel_opt = *temp_selection.read();
+                if let Some(mut selection) = temp_sel_opt {
+                    selection.end = pos;
+                    temp_selection.set(Some(selection));
                 }
             }
-        }
-    });
+            AppState::Dragging => {
+                let selection_opt = *current_selection.read();
+                let offset_opt = *drag_offset.read();
+                let screen_sz = *screen_size.read();
 
-    // 键盘事件
-    let onglobalkeydown = move |e: KeyboardEvent| {
-        println!("按键事件: {:?}", e.key);
-        match e.key {
-            Key::Escape => {
-                println!("Esc键被按下，正在退出...");
-                platform.exit();
+                if let (Some(selection), Some(offset)) = (selection_opt, offset_opt) {
+                    let new_selection = Selection {
+                        start: (pos.0 - offset.0, pos.1 - offset.1),
+                        end: (
+                            pos.0 - offset.0 + selection.size().0,
+                            pos.1 - offset.1 + selection.size().1,
+                        ),
+                    };
+
+                    current_selection.set(Some(geometry::constrain_to_screen(
+                        new_selection,
+                        screen_sz,
+                    )));
+                }
+            }
+            AppState::Resizing => {
+                // 调整大小逻辑（保持你的完整实现）
+                let handle_opt = *resize_handle.read();
+                let anchor_opt = *resize_anchor.read();
+                let selection_opt = *current_selection.read();
+                let screen_sz = *screen_size.read();
+
+                if let (Some(handle), Some(anchor), Some(selection)) =
+                    (handle_opt, anchor_opt, selection_opt)
+                {
+                    let screen_width = screen_sz.0 as f32;
+                    let screen_height = screen_sz.1 as f32;
+
+                    let constrained_x = pos.0.max(0.0).min(screen_width);
+                    let constrained_y = pos.1.max(0.0).min(screen_height);
+
+                    let (left, top, right, bottom) = selection.bounds();
+
+                    let new_selection = match handle {
+                        ResizeHandle::TopLeft => Selection {
+                            start: (
+                                constrained_x.min(anchor.0 - MIN_SELECTION_SIZE),
+                                constrained_y.min(anchor.1 - MIN_SELECTION_SIZE),
+                            ),
+                            end: anchor,
+                        },
+                        ResizeHandle::TopRight => Selection {
+                            start: (anchor.0, constrained_y.min(anchor.1 - MIN_SELECTION_SIZE)),
+                            end: (constrained_x.max(anchor.0 + MIN_SELECTION_SIZE), anchor.1),
+                        },
+                        ResizeHandle::BottomRight => Selection {
+                            start: anchor,
+                            end: (
+                                constrained_x.max(anchor.0 + MIN_SELECTION_SIZE),
+                                constrained_y.max(anchor.1 + MIN_SELECTION_SIZE),
+                            ),
+                        },
+                        ResizeHandle::BottomLeft => Selection {
+                            start: (constrained_x.min(anchor.0 - MIN_SELECTION_SIZE), anchor.1),
+                            end: (anchor.0, constrained_y.max(anchor.1 + MIN_SELECTION_SIZE)),
+                        },
+                        ResizeHandle::Top => Selection {
+                            start: (left, constrained_y.min(bottom - MIN_SELECTION_SIZE)),
+                            end: (right, bottom),
+                        },
+                        ResizeHandle::Bottom => Selection {
+                            start: (left, top),
+                            end: (right, constrained_y.max(top + MIN_SELECTION_SIZE)),
+                        },
+                        ResizeHandle::Left => Selection {
+                            start: (constrained_x.min(right - MIN_SELECTION_SIZE), top),
+                            end: (right, bottom),
+                        },
+                        ResizeHandle::Right => Selection {
+                            start: (left, top),
+                            end: (constrained_x.max(left + MIN_SELECTION_SIZE), bottom),
+                        },
+                    };
+
+                    current_selection.set(Some(geometry::constrain_to_screen(
+                        new_selection,
+                        screen_sz,
+                    )));
+                }
             }
             _ => {}
         }
     };
 
-    // 鼠标事件处理
-    let onmousedown = move |e: MouseEvent| {
-        // 右键退出
-        if e.trigger_button == Some(MouseButton::Right) {
-            println!("右键点击，正在退出...");
-            platform.exit();
-            return;
+    let handle_mouse_up = move |_: MouseEvent| {
+        let current_state = *app_state.read();
+
+        match current_state {
+            AppState::Selecting => {
+                let temp_sel = *temp_selection.read();
+                if let Some(selection) = temp_sel {
+                    current_selection.set(Some(selection));
+                }
+                temp_selection.set(None);
+            }
+            AppState::Dragging => {
+                drag_offset.set(None);
+            }
+            AppState::Resizing => {
+                resize_handle.set(None);
+                resize_anchor.set(None);
+            }
+            _ => {}
         }
 
-        let element_coords = e.get_element_coordinates();
-        let x = element_coords.x as f32 * dpi_scale;
-        let y = element_coords.y as f32 * dpi_scale;
+        app_state.set(AppState::Idle);
+    };
 
-        println!("=== 鼠标按下 ===");
-        println!("坐标: ({}, {})", x, y);
+    // 绘制逻辑（保持你重构后的代码）
+    let canvas = use_canvas(move || {
+        platform.invalidate_drawing_area(size.peek().area);
 
-        // 先读取选择框状态，避免借用冲突
+        let screenshot = screenshot_image.read().clone();
+        let state = *app_state.read();
         let current_sel = *current_selection.read();
+        let temp_sel = *temp_selection.read();
+        let screen_sz = *screen_size.read();
 
-        // 检查是否点击在现有选择框上
-        if let Some(((start_x, start_y), (end_x, end_y))) = current_sel {
-            // 检查是否点击在按钮上
-            if point_in_buttons(x, y, ((start_x, start_y), (end_x, end_y))) {
-                // 计算点击的是哪个按钮
-                let left = start_x.min(end_x);
-                let right = start_x.max(end_x);
-                let bottom = start_y.max(end_y);
-                let center_x = (left + right) / 2.0;
+        let selection = current_sel.or(temp_sel);
 
-                let toolbar_y = bottom + 15.0;
-                let button_width = 40.0;
-                let button_spacing = 5.0;
-                let total_buttons = 5.0;
-                let total_width =
-                    total_buttons * button_width + (total_buttons - 1.0) * button_spacing;
-                let toolbar_start_x = center_x - total_width / 2.0;
+        move |ctx| {
+            ctx.canvas.clear(Color::TRANSPARENT);
 
-                // 计算按钮索引
-                let relative_x = x - toolbar_start_x;
-                let button_index = (relative_x / (button_width + button_spacing)).floor() as usize;
+            if let Some(img) = &screenshot {
+                let canvas_rect = Rect::from_xywh(0.0, 0.0, ctx.area.width(), ctx.area.height());
+                ctx.canvas
+                    .draw_image_rect(img, None, canvas_rect, &Paint::default());
 
-                match button_index {
-                    0 => {
-                        println!("点击了保存按钮");
-                        // 保存截图功能
-                        if let Some(screenshot) = screenshot_image.read().clone() {
-                            println!(
-                                "保存区域: ({}, {}) 到 ({}, {})",
-                                start_x, start_y, end_x, end_y
-                            );
-                            // TODO: 实现保存选定区域到文件
-                        }
-                    }
-                    1 => {
-                        println!("点击了复制按钮");
-                        // 复制到剪贴板功能
-                        if let Some(screenshot) = screenshot_image.read().clone() {
-                            println!(
-                                "复制区域: ({}, {}) 到 ({}, {})",
-                                start_x, start_y, end_x, end_y
-                            );
-                            // TODO: 实现复制选定区域到剪贴板
-                        }
-                    }
-                    2 => {
-                        println!("点击了编辑按钮");
-                        // 进入编辑模式
-                        println!(
-                            "进入编辑模式，选择区域: ({}, {}) 到 ({}, {})",
-                            start_x, start_y, end_x, end_y
-                        );
-                        // TODO: 实现编辑功能（添加文字、箭头、马赛克等）
-                    }
-                    3 => {
-                        println!("点击了分享按钮");
-                        // 分享功能
-                        if let Some(screenshot) = screenshot_image.read().clone() {
-                            println!(
-                                "分享区域: ({}, {}) 到 ({}, {})",
-                                start_x, start_y, end_x, end_y
-                            );
-                            // TODO: 实现分享功能（保存到临时文件并打开分享对话框）
-                        }
-                    }
-                    4 => {
-                        println!("点击了关闭按钮");
-                        // 清除选择框并返回到初始状态
-                        // current_selection.set(None);
-                        is_selecting.set(false);
-                        is_dragging.set(false);
-                        is_resizing.set(false);
-                        drag_offset.set(None);
-                        resize_handle.set(None);
-                        resize_anchor.set(None);
-                        println!("已清除选择框");
-                    }
-                    _ => {
-                        println!("点击了未知按钮: {}", button_index);
+                let mut mask_paint = Paint::default();
+                mask_paint.set_color(Color::from_argb(160, 0, 0, 0));
+                ctx.canvas.draw_rect(canvas_rect, &mask_paint);
+
+                if let Some(sel) = selection {
+                    rendering::draw_selection_area(ctx, img, &sel);
+                    rendering::draw_selection_border(ctx, &sel, state);
+
+                    if state == AppState::Idle {
+                        rendering::draw_handles(ctx, &sel);
+                        let toolbar = Toolbar::calculate(&sel, screen_sz);
+                        rendering::draw_toolbar(ctx, &toolbar, &sel);
                     }
                 }
-                return;
-            }
-
-            // 首先检查是否点击在调整大小手柄上
-            if let Some(handle) = get_resize_handle(x, y, (start_x, start_y), (end_x, end_y)) {
-                println!("开始调整大小: {:?}", handle);
-                is_resizing.set(true);
-                resize_handle.set(Some(handle));
-
-                // 设置锚点（调整大小时的固定点）
-                let left = start_x.min(end_x);
-                let right = start_x.max(end_x);
-                let top = start_y.min(end_y);
-                let bottom = start_y.max(end_y);
-
-                let anchor = match handle {
-                    ResizeHandle::TopLeft => (right, bottom),
-                    ResizeHandle::TopRight => (left, bottom),
-                    ResizeHandle::BottomRight => (left, top),
-                    ResizeHandle::BottomLeft => (right, top),
-                    ResizeHandle::Top => (left, bottom),
-                    ResizeHandle::Bottom => (left, top),
-                    ResizeHandle::Left => (right, top),
-                    ResizeHandle::Right => (left, top),
-                };
-                resize_anchor.set(Some(anchor));
-                return;
-            }
-            // 然后检查是否点击在选择框内（开始拖动）
-            else if point_in_rect(x, y, (start_x, start_y), (end_x, end_y)) {
-                is_dragging.set(true);
-                let offset_x = x - start_x.min(end_x);
-                let offset_y = y - start_y.min(end_y);
-                drag_offset.set(Some((offset_x, offset_y)));
-                println!("开始拖动选择框，偏移: ({}, {})", offset_x, offset_y);
-                return;
-            }
-            // 如果点击在选择框外且不在按钮区域，忽略点击事件
-            else {
-                println!("点击在选择框外，忽略点击事件");
-                return;
             }
         }
+    });
 
-        // 只有在没有现有选择框的情况下才开始新的选择
-        selection_start.set(Some((x, y)));
-        selection_end.set(Some((x, y)));
-        is_selecting.set(true);
-        current_selection.set(None);
-        is_dragging.set(false);
-        is_resizing.set(false);
-        drag_offset.set(None);
-        resize_handle.set(None);
-        resize_anchor.set(None);
-
-        println!("开始新选择: ({}, {})", x, y);
-    };
-
-    let onmousemove = move |e: MouseEvent| {
-        let element_coords = e.get_element_coordinates();
-        let x = element_coords.x as f32 * dpi_scale;
-        let y = element_coords.y as f32 * dpi_scale;
-        mouse_pos.set((x, y));
-        if *is_selecting.read() {
-            // 正在框选
-            selection_end.set(Some((x, y)));
-        } else if *is_dragging.read() {
-            // 正在拖动
-            let current_sel = *current_selection.read();
-            let drag_off = *drag_offset.read();
-
-            if let (Some(((start_x, start_y), (end_x, end_y))), Some((offset_x, offset_y))) =
-                (current_sel, drag_off)
-            {
-                let width = (end_x - start_x).abs();
-                let height = (end_y - start_y).abs();
-
-                let new_left = x - offset_x;
-                let new_top = y - offset_y;
-                let new_right = new_left + width;
-                let new_bottom = new_top + height;
-
-                current_selection.set(Some(((new_left, new_top), (new_right, new_bottom))));
-            }
-        } else if *is_resizing.read() {
-            // 正在调整大小
-            let handle = *resize_handle.read();
-            let anchor = *resize_anchor.read();
-
-            // 先读取current_selection的值，然后释放借用
-            let current_sel = *current_selection.read();
-
-            if let (
-                Some(handle),
-                Some((anchor_x, anchor_y)),
-                Some(((start_x, start_y), (end_x, end_y))),
-            ) = (handle, anchor, current_sel)
-            {
-                let current_left = start_x.min(end_x);
-                let current_right = start_x.max(end_x);
-                let current_top = start_y.min(end_y);
-                let current_bottom = start_y.max(end_y);
-
-                let (new_start, new_end) = match handle {
-                    // 角手柄：一个角拖动，对角为锚点
-                    ResizeHandle::TopLeft => ((x, y), (anchor_x, anchor_y)),
-                    ResizeHandle::TopRight => ((anchor_x, y), (x, anchor_y)),
-                    ResizeHandle::BottomRight => ((anchor_x, anchor_y), (x, y)),
-                    ResizeHandle::BottomLeft => ((x, anchor_y), (anchor_x, y)),
-
-                    // 边手柄：只改变一个维度，保持另一个维度不变
-                    ResizeHandle::Top => ((current_left, y), (current_right, current_bottom)),
-                    ResizeHandle::Bottom => ((current_left, current_top), (current_right, y)),
-                    ResizeHandle::Left => ((x, current_top), (current_right, current_bottom)),
-                    ResizeHandle::Right => ((current_left, current_top), (x, current_bottom)),
-                };
-
-                // 现在可以安全地进行可变借用
-                current_selection.set(Some((new_start, new_end)));
-            }
-        }
-    };
-    let onmouseup = move |e: MouseEvent| {
-        let element_coords = e.get_element_coordinates();
-        let x = element_coords.x as f32 * dpi_scale;
-        let y = element_coords.y as f32 * dpi_scale;
-
-        if *is_selecting.read() {
-            // 完成框选
-            if let Some(start) = *selection_start.read() {
-                current_selection.set(Some((start, (x, y))));
-                println!("选择完成: 从({}, {}) 到 ({}, {})", start.0, start.1, x, y);
-            }
-            is_selecting.set(false);
-        } else if *is_dragging.read() {
-            // 完成拖动
-            if let Some(((start_x, start_y), (end_x, end_y))) = *current_selection.read() {
-                println!(
-                    "拖动完成: 新位置从({}, {}) 到 ({}, {})",
-                    start_x, start_y, end_x, end_y
-                );
-            }
-            is_dragging.set(false);
-            drag_offset.set(None);
-        } else if *is_resizing.read() {
-            // 完成调整大小
-            if let Some(((start_x, start_y), (end_x, end_y))) = *current_selection.read() {
-                println!(
-                    "调整大小完成: 新尺寸从({}, {}) 到 ({}, {})",
-                    start_x, start_y, end_x, end_y
-                );
-            }
-            is_resizing.set(false);
-            resize_handle.set(None);
-            resize_anchor.set(None);
-        }
-    };
-
+    // 使用 CursorArea 包装（就像你之前的代码）
     rsx!(
         rect {
             width: "fill",
             height: "fill",
-            onmousedown,
-            onmousemove,
-            onmouseup,
-            onglobalkeydown,
-                CursorArea {
-                    icon: get_cursor_icon(),
-                    rect {
+            onmousedown: handle_mouse_down,
+            onmousemove: handle_mouse_move,
+            onmouseup: handle_mouse_up,
+            onglobalkeydown: move |e: KeyboardEvent| {
+                if e.key == Key::Escape {
+                    platform.exit();
+                }
+            },
+            CursorArea {
+                icon: get_cursor_icon(),
+                rect {
                     canvas_reference: canvas.attribute(),
                     reference,
-                     width: "fill",
-                     height: "fill",
-                    }
+                    width: "fill",
+                    height: "fill",
                 }
+            }
         }
     )
 }

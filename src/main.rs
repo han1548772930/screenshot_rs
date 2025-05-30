@@ -363,8 +363,8 @@ fn app() -> Element {
                             ctx.canvas.draw_circle((end_x, end_y), 3.0, &debug_paint);
                         }
 
-                        // 绘制调整大小的手柄（仅在选择完成且没有正在进行其他操作时显示）
-                        // ...existing code...
+                       
+                   
 
                         // 绘制调整大小的手柄（仅在选择完成且没有正在进行其他操作时显示）
                         if !is_sel && !is_drag && !is_resize {

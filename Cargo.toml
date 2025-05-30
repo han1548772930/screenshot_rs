@@ -1,0 +1,22 @@
+[package]
+name = "freya_test"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+freya = "0.3"
+tray-icon = "0.20"
+image = "0.25"
+winit = "0.30.11"
+screenshots = "0.8"
+
+skia-safe = { version = "0.82.0", features = ["gl", "textlayout", "svg"] }
+display-info = "0.5.4"
+
+
+[profile.release]
+#panic = "abort"
+codegen-units = 1
+lto = true
+#incremental = false
+opt-level = 2

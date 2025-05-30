@@ -6,7 +6,6 @@ edition = "2024"
 [dependencies]
 freya = "0.3"
 tray-icon = "0.20"
-image = "0.25"
 winit = "0.30.11"
 screenshots = "0.8"
 

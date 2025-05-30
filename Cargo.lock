@@ -1755,7 +1755,6 @@ version = "0.1.0"
 dependencies = [
  "display-info 0.5.4",
  "freya",
- "image 0.25.6",
  "screenshots",
  "skia-safe",
  "tray-icon",

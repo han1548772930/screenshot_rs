@@ -10,7 +10,7 @@ use skia_safe::{
     AlphaType, Color, ColorType, Data, Image as SkiaImage, ImageInfo, Paint, PaintStyle,
     PathEffect, Rect, canvas::SrcRectConstraint, images,
 };
-use std::sync::Arc;
+
 use winit::window::WindowLevel;
 
 // 常量定义

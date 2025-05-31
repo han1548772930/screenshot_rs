@@ -9,7 +9,7 @@ tray-icon = "0.20"
 winit = "0.30.11"
 screenshots = "0.8"
 
-skia-safe = { version = "0.82.0", features = ["gl", "textlayout", "svg"] }
+skia-safe = { version = "0.82.0", features = ["gl", "gpu"] }
 display-info = "0.5.4"
 
 
